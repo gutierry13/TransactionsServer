@@ -2,28 +2,59 @@ import { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { knex } from '../database'
+import { checkSessionIdExists } from '../middlewares/verify-if-sessionid-exists'
 
 export async function transactionsRoutes(app: FastifyInstance) {
-  app.get('/summary', async () => {
-    const summary = await knex('transactions')
-      .sum('amount', {
-        as: 'amount',
+  app.get(
+    '/summary',
+    {
+      preHandler: [checkSessionIdExists],
+    },
+    async (request) => {
+      const { sessionId } = request.cookies
+
+      const summary = await knex('transactions')
+        .where('session_id', sessionId)
+        .sum('amount', {
+          as: 'amount',
+        })
+        .first()
+      return { summary }
+    },
+  )
+  app.get(
+    '/',
+    {
+      preHandler: [checkSessionIdExists],
+    },
+    async (request, reply) => {
+      const { sessionId } = request.cookies
+      const transactions = await knex('transactions')
+        .where('session_id', sessionId)
+        .select()
+      return { transactions }
+    },
+  )
+  app.get(
+    '/:id',
+    {
+      preHandler: [checkSessionIdExists],
+    },
+    async (request) => {
+      const transactionsParams = z.object({
+        id: z.string().uuid(),
       })
-      .first()
-    return { summary }
-  })
-  app.get('/', async () => {
-    const transactions = await knex('transactions').select()
-    return { transactions }
-  })
-  app.get('/:id', async (request) => {
-    const transactionsParams = z.object({
-      id: z.string().uuid(),
-    })
-    const { id } = transactionsParams.parse(request.params)
-    const transaction = await knex('transactions').where('id', id).first()
-    return { transaction }
-  })
+      const { sessionId } = request.cookies
+      const { id } = transactionsParams.parse(request.params)
+      const transaction = await knex('transactions')
+        .where({
+          id,
+          sessionId,
+        })
+        .first()
+      return { transaction }
+    },
+  )
   app.post('/', async (request, reply) => {
     const createTranasctionsBodySchema = z.object({
       title: z.string(),
@@ -33,10 +64,19 @@ export async function transactionsRoutes(app: FastifyInstance) {
     const { title, amount, type } = createTranasctionsBodySchema.parse(
       request.body,
     )
+    let sessionId = request.cookies.sessionId
+    if (!sessionId) {
+      sessionId = randomUUID()
+      reply.cookie('sessionId', sessionId, {
+        path: '/',
+        maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days in milliseconds
+      })
+    }
     await knex('transactions').insert({
       id: randomUUID(),
       title,
       amount: type === 'credit' ? amount : amount * -1,
+      session_id: sessionId,
     })
     reply.status(201).send()
   })
